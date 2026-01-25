@@ -1,0 +1,741 @@
+{
+  "name": "AI_Chat_Root_Safe_Workflow",
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Webhook_Entry",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [300, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "CHAT_EXEC",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "chat_exec_webhook"
+    }
+  ],
+  "connections": {},
+  "active": false,
+  "settings": {},
+  "versionId": "1"
+}{
+  "nodes": [
+    {
+      "id": "2",
+      "name": "Token_Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [600, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"token\"]}}",
+              "value2": "MY_SECRET_TOKEN"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3",
+      "name": "Mode_Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "parameters": {
+        "propertyName": "={{$json[\"mode\"]}}",
+        "dataType": "string",
+        "rules": [
+          {
+            "operation": "equal",
+            "value": "talk"
+          },
+          {
+            "operation": "equal",
+            "value": "execute"
+          }
+        ],
+        "fallbackOutput": 3
+      }
+    }
+  ],
+  "connections": {
+    "Webhook_Entry": {
+      "main": [
+        [
+          {
+            "node": "Token_Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token_Check": {
+      "main": [
+        [
+          {
+            "node": "Mode_Switch",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  }
+}{
+  "nodes": [
+    {
+      "id": "4",
+      "name": "DB_Fetch_Conversation",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1200, 200],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT role, content FROM conversation_messages WHERE session_id = {{$json[\"session_id\"]}} ORDER BY created_time DESC LIMIT 20;",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "5",
+      "name": "Build_LLM_Prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 200],
+      "parameters": {
+        "functionCode": "const history = items[0].json;\nlet messages = [];\n\nconst systemPrompt = `你是运行在我VPS上的AI助理，具备两阶段能力：对话模式只做推理和讨论，执行模式需要我确认。你默认只能读取VPS信息，不允许执行写/删/改指令。执行命令必须在我说“执行”并提供正确确认码后才开始。`;\n\nmessages.push({ role: 'system', content: systemPrompt });\n\nif (history) {\n  history.forEach(row => {\n    messages.push({ role: row.role === 'user' ? 'user' : 'assistant', content: row.content });\n  });\n}\n\nmessages.push({ role: 'user', content: $json[\"user_message\"] });\n\nreturn [{ json: { messages } }];"
+      }
+    },
+    {
+      "id": "6",
+      "name": "LLM_Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [1800, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LLM_API_URL}}",
+        "authentication": "headerAuth",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{$env.LLM_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={\"model\": $env.LLM_MODEL_NAME, \"messages\": {{$json[\"messages\"]}}}"
+      }
+    },
+    {
+      "id": "7",
+      "name": "DB_Insert_UserMessage",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [2100, 100],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversation_messages (session_id, role, content, created_time) VALUES ({{$json[\"session_id\"]}}, 'user', {{$json[\"user_message\"]}}, NOW());"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "8",
+      "name": "DB_Insert_AssistantReply",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [2100, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversation_messages (session_id, role, content, created_time) VALUES ({{$json[\"session_id\"]}}, 'assistant', {{$json[\"assistant_reply\"]}}, NOW());"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "9",
+      "name": "Extract_LLM_Reply",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1800, 350],
+      "parameters": {
+        "functionCode": "const reply = items[0].json.choices?.[0]?.message?.content || \"(LLM无回复)\";\nreturn [{ json: { assistant_reply: reply } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Mode_Switch": {
+      "main": [
+        [
+          {
+            "node": "DB_Fetch_Conversation",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [],
+        []
+      ]
+    },
+    "DB_Fetch_Conversation": {
+      "main": [
+        [
+          {
+            "node": "Build_LLM_Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build_LLM_Prompt": {
+      "main": [
+        [
+          {
+            "node": "LLM_Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM_Request": {
+      "main": [
+        [
+          {
+            "node": "Extract_LLM_Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_LLM_Reply": {
+      "main": [
+        [
+          {
+            "node": "DB_Insert_UserMessage",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "DB_Insert_AssistantReply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}{
+  "name": "AI_Chat_Root_Safe_Workflow",
+  "nodes": [
+    ... 6 段合并后的全部节点 ...
+  ],
+  "connections": {
+    ... 全部 connection ...
+  },
+  "active": false
+}LLM_API_URL
+LLM_API_KEY
+LLM_MODEL_NAME
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD{
+  "nodes": [
+    {
+      "id": "10",
+      "name": "Check_Intent_Trigger",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1200, 500],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"user_message\"]}}",
+              "operation": "contains",
+              "value2": "整理计划"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "11",
+      "name": "Generate_Intent_ID",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1500, 480],
+      "parameters": {
+        "functionCode": "function uuid(){return 'xxxxxx'.replace(/[x]/g,()=> (Math.random()*36|0).toString(36));}\nreturn [{json:{intent_id:uuid()}}];"
+      }
+    },
+    {
+      "id": "12",
+      "name": "Create_Intent_DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1800, 480],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO intents (intent_id, session_id, summary, status, created_time, updated_at) VALUES ({{$json[\"intent_id\"]}}, {{$json[\"session_id\"]}}, '由AI自动生成的大纲占位', 'draft', NOW(), NOW());"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "13",
+      "name": "Update_Intent_DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1800, 620],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE intents SET summary = '更新后的大纲占位', status = 'draft', updated_at = NOW() WHERE session_id = {{$json[\"session_id\"]}};"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "14",
+      "name": "Intent_Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2100, 550],
+      "parameters": {
+        "functionCode": "return [{json:{intent_summary:'大纲占位描述',intent_id:$json.intent_id||null}}];"
+      }
+    }
+  ],
+  "connections": {
+    "Extract_LLM_Reply": {
+      "main": [
+        [],
+        [],
+        [
+          {
+            "node": "Check_Intent_Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check_Intent_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Generate_Intent_ID",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update_Intent_DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate_Intent_ID": {
+      "main": [
+        [
+          {
+            "node": "Create_Intent_DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create_Intent_DB": {
+      "main": [
+        [
+          {
+            "node": "Intent_Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update_Intent_DB": {
+      "main": [
+        [
+          {
+            "node": "Intent_Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}{
+  "nodes": [
+    {
+      "id": "15",
+      "name": "Check_Execute_Confirm",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1200, 850],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"confirm\"]}}",
+              "operation": "equal",
+              "value2": "EXECUTE_NOW"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "16",
+      "name": "Check_Intent_ID_Provided",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1500, 850],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"intent_id\"]}}",
+              "operation": "notEqual",
+              "value2": ""
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "17",
+      "name": "DB_Fetch_Intent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [1800, 850],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM intents WHERE intent_id = {{$json[\"intent_id\"]}} LIMIT 1;"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "18",
+      "name": "Check_Intent_Status",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2100, 850],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[0].status}}",
+              "operation": "equal",
+              "value2": "ready"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "19",
+      "name": "Execute_Pipeline_Placeholder",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2400, 780],
+      "parameters": {
+        "functionCode": "return [{ json: { execution_result: \"COMMAND_PIPELINE_PLACEHOLDER: 此处未来执行ROOT命令（需要你手动接入）\" } }];"
+      }
+    },
+    {
+      "id": "20",
+      "name": "DB_Update_Intent_Executed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [2700, 780],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE intents SET status = 'executed', updated_at = NOW() WHERE intent_id = {{$json[\"intent_id\"]}};"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "21",
+      "name": "DB_Insert_Execution_Log",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [3000, 780],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO conversation_messages (session_id, role, content, created_time) VALUES ({{$json[\"session_id\"]}}, 'assistant', {{$json[\"execution_result\"]}}, NOW());"
+      },
+      "credentials": {
+        "postgres": {
+          "host": "={{$env.DB_HOST}}",
+          "port": "={{$env.DB_PORT}}",
+          "database": "n8n_ai_chat",
+          "user": "n8n_user",
+          "password": "123456"
+        }
+      }
+    },
+    {
+      "id": "22",
+      "name": "Execution_Output",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3300, 780],
+      "parameters": {
+        "functionCode": "return [{json:{assistant_reply:'执行完成（占位）',execution_result:$json.execution_result,intent_id:$json.intent_id}}];"
+      }
+    }
+  ],
+  "connections": {
+    "Mode_Switch": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Check_Execute_Confirm",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Check_Execute_Confirm": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Check_Intent_ID_Provided",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check_Intent_ID_Provided": {
+      "main": [
+        [
+          {
+            "node": "DB_Fetch_Intent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "DB_Fetch_Intent": {
+      "main": [
+        [
+          {
+            "node": "Check_Intent_Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check_Intent_Status": {
+      "main": [
+        [
+          {
+            "node": "Execute_Pipeline_Placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Execute_Pipeline_Placeholder": {
+      "main": [
+        [
+          {
+            "node": "DB_Update_Intent_Executed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DB_Update_Intent_Executed": {
+      "main": [
+        [
+          {
+            "node": "DB_Insert_Execution_Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DB_Insert_Execution_Log": {
+      "main": [
+        [
+          {
+            "node": "Execution_Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}{
+  "nodes": [
+    {
+      "id": "23",
+      "name": "Build_Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3600, 480],
+      "parameters": {
+        "functionCode": "const data = items[0].json;\n\nreturn [{ json: {\n  success: true,\n  mode: $json.mode || \"talk\",\n  session_id: $json.session_id,\n  assistant_reply: data.assistant_reply || null,\n  short_history: \"历史省略占位\",\n  intent_summary: data.intent_summary || null,\n  intent_id: data.intent_id || null,\n  execution_result: data.execution_result || null\n}}];"
+      }
+    },
+    {
+      "id": "24",
+      "name": "Webhook_Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3900, 480],
+      "parameters": {
+        "responseBody": "={{$json}}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Intent_Output": {
+      "main": [
+        [
+          {
+            "node": "Build_Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execution_Output": {
+      "main": [
+        [
+          {
+            "node": "Build_Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DB_Insert_AssistantReply": {
+      "main": [
+        [
+          {
+            "node": "Build_Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build_Response": {
+      "main": [
+        [
+          {
+            "node": "Webhook_Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}{
+  "name": "AI_Chat_Root_Safe_Workflow",
+  "nodes": [
+    // 在这里依次拼接：第 1 段到第 6 段的所有 "nodes" 内容
+  ],
+  "connections": {
+    // 在这里合并：第 1 段到第 6 段的所有 "connections"
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "1"
+}
